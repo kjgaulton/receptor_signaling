@@ -1,9 +1,6 @@
 # Receptor–gene association from single-cell RDS data
 
-The primary pipeline now uses **R and negative-binomial mixed models**, with
-likelihood-ratio p-values and Benjamini–Hochberg adjusted p-values. The earlier
-Python gradient-boosting prototype remains available but is no longer the primary
-workflow; see [its documentation](PYTHON_SCREEN.md).
+This repository provides code to test for association between the expression of a signaling receptor and downstream targets using single cell profiles.  
 
 ## Input and quick start
 
