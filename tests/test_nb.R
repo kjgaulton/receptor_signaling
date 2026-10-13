@@ -141,3 +141,51 @@ for (content in c("", "name\tdesc", "name\tdesc\t", "name\tdesc\tgene\t",
 }
 unlink(c(config, gmt))
 cat("All text config and GMT tests passed.\n")
+
+# Pooled predictors equal a manually collapsed receptor row, including QC.
+receptor_file <- tempfile(fileext = ".txt")
+writeLines(c("# receptors", "", "R, R2, R", "R"), receptor_file)
+groups <- read_receptor_file(receptor_file)
+stopifnot(length(groups) == 2L, groups[[1]]$line == 3L,
+          identical(groups[[1]]$receptors, c("R", "R2")))
+for (line in c("", "# only comment", "R,", ",R", "R,,R2")) {
+  writeLines(line, receptor_file)
+  stopifnot(is.character(tryCatch(read_receptor_file(receptor_file), error = conditionMessage)))
+}
+pooled_counts <- rbind(counts, R2 = counts["R", ])
+saveRDS(list(counts = pooled_counts, metadata = metadata), path)
+pool <- run_receptor_nb(path, c("R", "R2"), "T", list(targets = "signal", qc_df = 1L),
+                        pool_receptors = TRUE)
+collapsed <- rbind(pooled_counts[!rownames(pooled_counts) %in% c("R", "R2"), ],
+                   pool = Matrix::colSums(pooled_counts[c("R", "R2"), ]))
+saveRDS(list(counts = collapsed, metadata = metadata), path)
+manual <- run_receptor_nb(path, "pool", "T", list(targets = "signal", qc_df = 1L))
+stopifnot(pool$results$status == "tested", pool$results$df == 1L,
+          isTRUE(all.equal(pool$results$p_value, manual$results$p_value)),
+          isTRUE(all.equal(pool$effects$estimate, manual$effects$estimate)))
+# Batch CLI: relative file path, GMT mode, a failed line and two later successes.
+saveRDS(list(counts = pooled_counts, metadata = metadata), path)
+writeLines(c("missing", "R", "R,R2"), receptor_file)
+writeLines("signal_set\tna\tsignal", gmt)
+writeLines(c(paste0("input = ", path), paste0("output = ", out),
+             paste0("receptors_file = ", basename(receptor_file)), "cell_type = T",
+             paste0("gene_sets_gmt = ", gmt), "qc_df = 1"), config)
+parsed <- read_analysis_config(config)
+stopifnot(identical(normalizePath(parsed$receptors_file), normalizePath(receptor_file)))
+status <- suppressWarnings(system2(file.path(R.home("bin"), "Rscript"),
+                                   c("scripts/run_nb.R", shQuote(config))))
+manifest <- read.csv(file.path(out, "analyses.csv"))
+stopifnot(status != 0L, identical(manifest$status, c("failed", "completed", "completed")),
+          manifest$receptors[3] == "R,R2")
+saved <- readRDS(file.path(out, "analysis_0003", "analysis.rds"))
+stopifnot(saved$pool_receptors, saved$results$df == 1L, saved$receptors_line == 3L,
+          file.exists(file.path(out, "analysis_0002", "gene_set_results.csv")))
+# Overwrite protection preserves the manifest.
+status <- suppressWarnings(system2(file.path(R.home("bin"), "Rscript"),
+                                   c("scripts/run_nb.R", shQuote(config))))
+stopifnot(status != 0L, identical(manifest, read.csv(file.path(out, "analyses.csv"))))
+write("receptors = R", config, append = TRUE)
+stopifnot(is.character(tryCatch(read_analysis_config(config), error = conditionMessage)))
+unlink(c(path, config, gmt, receptor_file))
+unlink(out, recursive = TRUE)
+cat("All receptor-file and pooling tests passed.\n")

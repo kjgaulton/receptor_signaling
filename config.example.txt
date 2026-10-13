@@ -2,7 +2,7 @@
 # Relative paths resolve from this configuration file's directory.
 input = data.rds
 output = results/il7r_cd4_nb
-receptors = IL7R
+receptors_file = receptors.example.txt
 cell_type = CD4 T
 cell_type_key = cell_type
 donor_key = donor_id

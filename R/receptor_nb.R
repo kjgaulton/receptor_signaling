@@ -83,7 +83,7 @@ fit_nb_checked <- function(formula, data, family) {
   list(model = fit, warnings = warnings)
 }
 
-run_receptor_nb <- function(input, receptors, cell_type, config = list()) {
+run_receptor_nb <- function(input, receptors, cell_type, config = list(), pool_receptors = FALSE) {
   if (!requireNamespace("glmmTMB", quietly = TRUE) || !requireNamespace("Matrix", quietly = TRUE)) {
     stop("Install glmmTMB and Matrix")
   }
@@ -125,15 +125,21 @@ run_receptor_nb <- function(input, receptors, cell_type, config = list()) {
   if (!any(mito)) stop("No mitochondrial genes matched; supply mito_prefix or mito_genes")
   ri <- match(receptors, genes)
   r <- t(as.matrix(counts[ri, , drop = FALSE]))
-  for (k in seq_along(receptors)) {
-    varying <- tapply(r[, k], donor, function(x) length(unique(x)) > 1L)
-    if (sum(r[, k] > 0) < cfg$min_detected || sum(varying) < cfg$min_receptor_donors) {
-      stop("Insufficient receptor detection/within-donor variation: ", receptors[k])
-    }
-  }
+  # Exclude individual member counts from QC before pooling the predictor.
   total <- Matrix::colSums(counts) - rowSums(r)
   ndetected <- Matrix::colSums(counts > 0) - rowSums(r > 0)
   mt <- Matrix::colSums(counts[mito, , drop = FALSE]) - rowSums(r[, mito[ri], drop = FALSE])
+  predictor_names <- receptors
+  if (pool_receptors) {
+    r <- matrix(rowSums(r), ncol = 1L)
+    predictor_names <- paste(receptors, collapse = ",")
+  }
+  for (k in seq_along(predictor_names)) {
+    varying <- tapply(r[, k], donor, function(x) length(unique(x)) > 1L)
+    if (sum(r[, k] > 0) < cfg$min_detected || sum(varying) < cfg$min_receptor_donors) {
+      stop("Insufficient receptor detection/within-donor variation: ", predictor_names[k])
+    }
+  }
   set_mode <- !is.null(cfg$gene_sets)
   if (set_mode) {
     sets <- cfg$gene_sets
@@ -208,7 +214,7 @@ run_receptor_nb <- function(input, receptors, cell_type, config = list()) {
       }
       tested <- character()
       term_receptors <- character()
-      for (k in seq_along(receptors)) {
+      for (k in seq_along(predictor_names)) {
         x <- log1p(1e4 * r[, k] / depth)
         # Keep the linear term on its natural log1p expression scale.
         b <- if (cfg$receptor_df == 1L) matrix(x, ncol = 1L) else scaled_basis(x, cfg$receptor_df)
@@ -221,7 +227,7 @@ run_receptor_nb <- function(input, receptors, cell_type, config = list()) {
           bn <- paste0("r", k, "_between", j)
           d[[wn]] <- within
           tested <- c(tested, wn)
-          term_receptors[wn] <- receptors[k]
+          term_receptors[wn] <- predictor_names[k]
           if (sd(between) > 1e-10) {
             d[[bn]] <- between
             nuisance <- c(nuisance, bn)
@@ -277,7 +283,7 @@ run_receptor_nb <- function(input, receptors, cell_type, config = list()) {
        analysis_type = if (set_mode) "gene_set_sum" else "gene",
        gene_set_members = if (set_mode) do.call(rbind, lapply(names(sets), function(name)
          data.frame(gene_set = name, gene = sets[[name]]))) else NULL,
-       config = cfg, receptors = receptors, cell_type = cell_type,
+       config = cfg, receptors = receptors, pool_receptors = pool_receptors, cell_type = cell_type,
        donor_cell_counts = table(donor), covariate_map = covariate_map,
        input = normalizePath(input), session = capture.output(sessionInfo()),
        interpretation = "Asymptotic within-donor joint receptor LRT; BH within this run; model assumptions required")

@@ -19,7 +19,7 @@ run_analysis() {
 }
 run_analysis
 for file in gene_results.csv receptor_effects.csv analysis.rds sessionInfo.txt; do
-  test -s "$fixture/output/run/$file"
+  test -s "$fixture/output/run/analysis_0001/$file"
 done
 if run_analysis > "$fixture/retry.log" 2>&1; then
   echo "ERROR: an existing output directory was overwritten" >&2
@@ -29,5 +29,5 @@ grep -q 'Output already exists' "$fixture/retry.log"
 docker run --rm --network none \
   --mount "type=bind,source=$fixture/output,target=/output,readonly" \
   --entrypoint Rscript "$image" --vanilla -e \
-  'r <- readRDS("/output/run/analysis.rds"); stopifnot(r$results$status == "tested", r$results$q_value < .05)'
+  'r <- readRDS("/output/run/analysis_0001/analysis.rds"); stopifnot(r$results$status == "tested", r$results$q_value < .05)'
 echo "Container mount test passed: offline run, read-only inputs/root, host-owned output, significance and overwrite protection."

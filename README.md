@@ -44,7 +44,7 @@ Rscript scripts/run_nb.R config.example.txt
 ```
 
 Specify input/output paths, receptor(s), cell type and donor metadata column.
-With multiple receptors, one joint hypothesis is tested per target gene.
+Use `receptors_file` to run one analysis per line, pooling genes on the same line.
 For Seurat v5 objects with split count layers, explicitly join the layers first:
 
 ```r
@@ -62,15 +62,56 @@ On-disk matrix backends are not supported by this initial implementation.
 Configurations are data, not executable R scripts. See [config.example.txt](config.example.txt).
 Use one `key = value` per line, without quotes. Blank lines and lines beginning
 with `#` are ignored; inline comments are not supported. Unknown or duplicate
-keys are errors. `input`, `output`, `receptors`, and `cell_type` are required.
+keys are errors. `input`, `output`, `receptors_file`, and `cell_type` are required for batch runs.
 Other keys use the defaults described below. Lists (`receptors`, `covariates`,
 `targets`, `mito_genes`) use commas; booleans use `true` or `false` and numbers
 use ordinary numeric notation (no R `L` suffix). An empty `covariates` means none;
 empty `targets`, `mito_genes`, or `gene_sets_gmt` select their defaults.
-Relative input, output, and GMT paths resolve from the configuration file's
+Relative input, output, receptor-file, and GMT paths resolve from the configuration file's
 location, independent of the shell's working directory. Paths and cell-type
 names can contain spaces. Existing R-script configs must be converted to this
 format; the CLI no longer sources them. The R function API still accepts lists.
+
+## Receptor input file and batch analyses
+
+Set `receptors_file = receptors.txt` (inside a container, for example
+`receptors_file = /input/receptors.txt`). The file contains one analysis per line:
+
+```text
+IL7R
+IL2RA,IL2RB,IL2RG
+```
+
+The first analysis uses IL7R expression. The second sums the raw counts of IL2RA,
+IL2RB and IL2RG per cell, then applies the usual log1p normalization and
+within-donor decomposition to that **single pooled predictor**. This gives one
+linear coefficient (or `receptor_df` spline coefficients) regardless of the number
+of pooled genes. It does not estimate separate gene effects or receptor synergy.
+High-expression genes can dominate the pool. Detection/variation requirements
+apply to pooled counts, while normalization and QC exclude all individual pool
+members. The genes need not be annotated receptors; identifiers must match the
+count matrix. Target sets containing any pool member are rejected as before.
+
+Whitespace is trimmed, blank lines and full-line `#` comments are skipped,
+and duplicate genes within a line are counted once. Empty comma-separated items
+are errors. Repeated lines remain separate analyses. See [receptors.example.txt](receptors.example.txt).
+
+Outputs are written to `output/analysis_0001/`, etc., using the original file
+line number. Each folder contains the usual results and `analysis.rds` with pool
+membership, source file and line. `output/analyses.csv` maps these folders to their
+receptors and completion/failure messages. Failed analyses do not stop later
+lines; the command exits nonzero if any line fails. Individual failed target fits
+remain recorded in their result tables. Analyses run sequentially and reload the
+input per line. The output parent must not already exist.
+
+BH adjustment is performed separately within each line's analysis, not across
+all receptor groups. It does not control a combined batch-wide testing family.
+The same targets or GMT file and cell type are used for every line.
+
+Legacy `receptors = IL7R` remains supported for a single analysis in the output
+root. A legacy comma-separated `receptors` value retains the previous joint test
+with separate predictors. Do not specify both `receptors` and `receptors_file`.
+The R API supports pooling through `run_receptor_nb(..., pool_receptors = TRUE)`.
 
 ## Receptor–gene-set association
 
@@ -188,7 +229,7 @@ degrees of freedom equal to the number of added receptor coefficients.
   nonlinear curve. Each basis is decomposed into donor mean and within-donor
   deviation, and all within-donor terms are tested jointly. Basis coefficients
   are output, but no single rate ratio or direction is assigned to the curve.
-- Multiple receptors: a joint omnibus test conditional on all their donor-mean
+- Multiple receptors via the legacy `receptors` option or unpooled R API: a joint omnibus test conditional on all their donor-mean
   terms. This is not a test of each receptor independently or of receptor synergy.
   Individual conditional LRTs and receptor interaction terms are not implemented.
 

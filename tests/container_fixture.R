@@ -13,6 +13,7 @@ colnames(counts) <- paste0("cell", seq_len(n))
 metadata <- data.frame(cell_type = "T", donor_id = as.character(donor), row.names = colnames(counts))
 saveRDS(list(counts = Matrix::Matrix(counts, sparse = TRUE), metadata = metadata),
         file.path(args[1L], "data.rds"))
-writeLines(c("input = /input/data.rds", "output = /output/run", "receptors = R",
+writeLines(c("input = /input/data.rds", "output = /output/run", "receptors_file = /input/receptors.txt",
              "cell_type = T", "targets = signal", "qc_df = 1"),
            file.path(args[1L], "config.txt"))
+writeLines("R", file.path(args[1L], "receptors.txt"))

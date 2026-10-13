@@ -12,12 +12,19 @@ read_analysis_config <- function(path) {
     if (key %in% names(values)) stop("Duplicate configuration key: ", key)
     values[[key]] <- value
   }
-  top <- c("input", "output", "receptors", "cell_type")
+  top <- c("input", "output", "receptors", "receptors_file", "cell_type")
   allowed <- c(top, setdiff(names(nb_defaults()), "gene_sets"))
   unknown <- setdiff(names(values), allowed)
   if (length(unknown)) stop("Unknown configuration keys: ", paste(unknown, collapse = ", "))
-  if (!all(top %in% names(values)) || any(!nzchar(unlist(values[top])))) {
-    stop("Config requires nonempty input, output, receptors, cell_type")
+  required <- c("input", "output", "cell_type")
+  if (!all(required %in% names(values)) || any(!nzchar(unlist(values[required])))) {
+    stop("Config requires nonempty input, output, cell_type")
+  }
+  if (sum(c("receptors", "receptors_file") %in% names(values)) != 1L) {
+    stop("Specify exactly one of receptors_file or receptors")
+  }
+  if (any(!nzchar(unlist(values[intersect(c("receptors", "receptors_file"), names(values))])))) {
+    stop("Receptor input must not be empty")
   }
   vectors <- c("receptors", "covariates", "mito_genes", "targets")
   numeric_keys <- c("receptor_df", "qc_df", "min_detected", "min_fraction", "min_donors", "min_receptor_donors")
@@ -43,11 +50,25 @@ read_analysis_config <- function(path) {
       if (key == "gene_sets_gmt") values[[key]] <- NULL else stop("Empty value: ", key)
     }
   }
-  for (key in intersect(c("input", "output", "gene_sets_gmt"), names(values))) {
+  for (key in intersect(c("input", "output", "gene_sets_gmt", "receptors_file"), names(values))) {
     value <- path.expand(values[[key]])
     if (!grepl("^(/|[A-Za-z]:[/\\\\]|\\\\\\\\)", value)) value <- file.path(dirname(path), value)
     values[[key]] <- value
   }
-  c(values[top], list(config = values[setdiff(names(values), top)]))
+  c(values[intersect(top, names(values))], list(config = values[setdiff(names(values), top)]))
 }
 
+
+# Preserve physical line numbers for traceable, filesystem-safe analysis IDs.
+read_receptor_file <- function(path) {
+  lines <- trimws(readLines(path, warn = FALSE))
+  groups <- list()
+  for (i in seq_along(lines)) {
+    if (!nzchar(lines[i]) || startsWith(lines[i], "#")) next
+    members <- trimws(head(strsplit(paste0(lines[i], ",__END__"), ",", fixed = TRUE)[[1L]], -1L))
+    if (any(!nzchar(members))) stop("Empty gene identifier on receptor-file line ", i)
+    groups[[length(groups) + 1L]] <- list(line = i, receptors = unique(members))
+  }
+  if (!length(groups)) stop("Receptor file contains no analyses")
+  groups
+}

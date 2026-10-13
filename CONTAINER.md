@@ -37,7 +37,7 @@ image or use its registry digest rather than rebuilding at a later date.
 
 ## Configure and run (macOS/Linux shell)
 
-Copy `container/config.txt` to `run-config.txt`. Edit receptor names, cell type,
+Copy `container/config.txt` to `run-config.txt`. Edit the receptor-file path, cell type,
 metadata column names and the input RDS filename. Use container paths:
 `/input/...` for data and `/output/<new-analysis-name>` for the output.
 
@@ -51,7 +51,11 @@ docker run --rm --network none \
   receptor-signaling:0.1.0 /config.txt
 ```
 
-Create the host `data` directory and put your RDS there before running. The image
+Create the host `data` directory and put your RDS and `receptors.txt` there before running.
+Each receptor-file line is an analysis; comma-separated genes on a line are pooled.
+For example, use `IL7R` on one line and `IL2RA,IL2RB,IL2RG` on the next.
+The config uses `receptors_file = /input/receptors.txt`. Results are stored in
+numbered analysis subdirectories with a top-level `analyses.csv` manifest. The image
 runs as UID/GID 10001 by default; overriding with your host IDs ensures output
 ownership matches your account on Linux. The mounted output parent must be writable.
 The `output` subdirectory specified in the configuration must not exist yet.
