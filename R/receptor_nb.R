@@ -1,3 +1,20 @@
+read_gene_sets_gmt <- function(path) {
+  lines <- readLines(path, warn = FALSE)
+  sets <- list()
+  for (i in seq_along(lines)) {
+    if (!nzchar(trimws(lines[i]))) next
+    fields <- strsplit(paste0(lines[i], "\t__END__"), "\t", fixed = TRUE)[[1L]]
+    fields <- trimws(head(fields, -1L))
+    if (length(fields) < 3L || !nzchar(fields[1L]) || any(!nzchar(fields[-c(1L, 2L)]))) {
+      stop("Invalid GMT line ", i, ": expected name, description, and one or more genes separated by tabs")
+    }
+    if (fields[1L] %in% names(sets)) stop("Duplicate GMT set name: ", fields[1L])
+    sets[[fields[1L]]] <- unique(fields[-c(1L, 2L)])
+  }
+  if (!length(sets)) stop("GMT contains no gene sets")
+  sets
+}
+
 # Raw-count, within-donor receptor association tests.
 
 read_receptor_rds <- function(path, assay = "RNA", layer = "counts") {
@@ -41,7 +58,7 @@ nb_defaults <- function() list(
   covariates = character(), mito_prefix = "MT-", mito_genes = NULL,
   family = "nbinom2", receptor_df = 1L, qc_df = 3L,
   min_detected = 20L, min_fraction = 0.01, min_donors = 5L,
-  min_receptor_donors = 3L, adjust_detected = TRUE, targets = NULL
+  min_receptor_donors = 3L, adjust_detected = TRUE, targets = NULL, gene_sets = NULL, gene_sets_gmt = NULL
 )
 
 scaled_basis <- function(x, df) {
@@ -73,6 +90,11 @@ run_receptor_nb <- function(input, receptors, cell_type, config = list()) {
   unknown <- setdiff(names(config), names(nb_defaults()))
   if (length(unknown)) stop("Unknown configuration fields: ", paste(unknown, collapse = ", "))
   cfg <- utils::modifyList(nb_defaults(), config)
+  if (!is.null(cfg$gene_sets_gmt)) {
+    if (!is.null(cfg$gene_sets)) stop("Specify gene_sets_gmt or gene_sets, not both")
+    cfg$gene_sets_gmt <- normalizePath(cfg$gene_sets_gmt, mustWork = TRUE)
+    cfg$gene_sets <- read_gene_sets_gmt(cfg$gene_sets_gmt)
+  }
   for (key in c("receptor_df", "qc_df", "min_detected", "min_donors", "min_receptor_donors")) {
     x <- cfg[[key]]
     if (length(x) != 1L || !is.finite(x) || x < 1 || x != as.integer(x)) stop("Invalid ", key)
@@ -112,8 +134,30 @@ run_receptor_nb <- function(input, receptors, cell_type, config = list()) {
   total <- Matrix::colSums(counts) - rowSums(r)
   ndetected <- Matrix::colSums(counts > 0) - rowSums(r > 0)
   mt <- Matrix::colSums(counts[mito, , drop = FALSE]) - rowSums(r[, mito[ri], drop = FALSE])
-  targets <- if (is.null(cfg$targets)) setdiff(genes, receptors) else unique(cfg$targets)
-  if (!length(targets) || !all(targets %in% genes) || any(targets %in% receptors)) stop("Invalid target gene list")
+  set_mode <- !is.null(cfg$gene_sets)
+  if (set_mode) {
+    sets <- cfg$gene_sets
+    if (!is.null(cfg$targets)) stop("Specify gene_sets or targets, not both")
+    if (!is.list(sets) || !length(sets) || is.null(names(sets)) ||
+        anyNA(names(sets)) || any(!nzchar(trimws(names(sets)))) || anyDuplicated(names(sets))) {
+      stop("gene_sets must be a nonempty list with unique nonempty names")
+    }
+    for (name in names(sets)) {
+      members <- sets[[name]]
+      if (!is.character(members) || !length(members) || anyNA(members) ||
+          any(!nzchar(members))) stop("Invalid gene members for set: ", name)
+      if (any(!members %in% genes)) stop("Missing genes in set ", name, ": ",
+                                        paste(setdiff(members, genes), collapse = ", "))
+      if (any(members %in% receptors)) stop("Gene set contains an input receptor: ", name)
+      sets[[name]] <- unique(members)
+    }
+    cfg$gene_sets <- sets
+    targets <- names(sets)
+  } else {
+    targets <- if (is.null(cfg$targets)) setdiff(genes, receptors) else unique(cfg$targets)
+    if (!length(targets) || !all(targets %in% genes) || any(targets %in% receptors)) stop("Invalid target gene list")
+    sets <- setNames(lapply(targets, identity), targets)
+  }
   extra <- data.frame(row.names = seq_len(ncol(counts)))
   covariate_map <- character()
   for (k in seq_along(cfg$covariates)) {
@@ -135,7 +179,9 @@ run_receptor_nb <- function(input, receptors, cell_type, config = list()) {
   effects <- list()
   for (i in seq_along(targets)) {
     gene <- targets[i]
-    y <- as.numeric(counts[gene, ])
+    members <- sets[[gene]]
+    member_counts <- counts[members, , drop = FALSE]
+    y <- as.numeric(Matrix::colSums(member_counts))
     row <- data.frame(gene = gene, status = "filtered", n_cells = length(y),
                       n_donors = nlevels(donor), n_detected = sum(y > 0),
                       lrt = NA_real_, df = NA_real_, p_value = NA_real_,
@@ -150,8 +196,8 @@ run_receptor_nb <- function(input, receptors, cell_type, config = list()) {
       if (any(depth <= 0)) stop("Nonpositive reference depth; supply whole-transcriptome counts and filter empty cells")
       d <- data.frame(y = y, donor = donor, log_depth = log(depth), extra)
       nuisance <- names(extra)
-      qc <- list(mito = (mt - y * mito[match(gene, genes)]) / depth)
-      if (cfg$adjust_detected) qc$detected <- log1p(ndetected - (y > 0))
+      qc <- list(mito = (mt - Matrix::colSums(member_counts[mito[match(members, genes)], , drop = FALSE])) / depth)
+      if (cfg$adjust_detected) qc$detected <- log1p(ndetected - Matrix::colSums(member_counts > 0))
       for (name in names(qc)) {
         b <- scaled_basis(qc[[name]], cfg$qc_df)
         for (j in seq_len(ncol(b))) {
@@ -221,7 +267,16 @@ run_receptor_nb <- function(input, receptors, cell_type, config = list()) {
   # Failed eligible fits count toward the testing family, without invented p-values.
   if (any(tested)) results$q_value[tested] <- p.adjust(results$p_value[tested], "BH", n = sum(results$status != "filtered"))
   results <- results[order(results$q_value, results$p_value, na.last = TRUE), ]
-  list(results = results, effects = if (length(effects)) do.call(rbind, effects) else data.frame(),
+  effects <- if (length(effects)) do.call(rbind, effects) else data.frame()
+  if (set_mode) {
+    names(results)[names(results) == "gene"] <- "gene_set"
+    if (nrow(effects)) names(effects)[names(effects) == "gene"] <- "gene_set"
+    results$n_genes <- lengths(sets)[results$gene_set]
+  }
+  list(results = results, effects = effects,
+       analysis_type = if (set_mode) "gene_set_sum" else "gene",
+       gene_set_members = if (set_mode) do.call(rbind, lapply(names(sets), function(name)
+         data.frame(gene_set = name, gene = sets[[name]]))) else NULL,
        config = cfg, receptors = receptors, cell_type = cell_type,
        donor_cell_counts = table(donor), covariate_map = covariate_map,
        input = normalizePath(input), session = capture.output(sessionInfo()),

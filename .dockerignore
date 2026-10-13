@@ -1,0 +1,14 @@
+# Allow only the files required by the R runtime; never send data or local libraries.
+**
+!Dockerfile
+!.dockerignore
+!R/
+!R/**
+!scripts/
+!scripts/run_nb.R
+!tests/
+!tests/test_nb.R
+!container/
+!container/**
+!README.md
+!CONTAINER.md

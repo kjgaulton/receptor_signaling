@@ -4,3 +4,8 @@ __pycache__/
 results/
 .Rlib/
 .Rhistory
+data/
+run-config.R
+run-config.txt
+receptor-signaling*.tar
+receptor-signaling*.sif

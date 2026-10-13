@@ -1,5 +1,6 @@
-.libPaths(c(normalizePath(".Rlib"), .libPaths()))
+if (dir.exists(".Rlib")) .libPaths(c(normalizePath(".Rlib"), .libPaths()))
 source("R/receptor_nb.R")
+source("R/config.R")
 set.seed(221)
 n <- 1200L
 donor <- rep(seq_len(12L), each = 100L)
@@ -64,11 +65,79 @@ if (requireNamespace("SingleCellExperiment", quietly = TRUE)) {
 # CLI exercise, including saved significance and metadata files.
 saveRDS(list(counts = counts, metadata = metadata), path)
 out <- tempfile()
-config <- tempfile(fileext = ".R")
+config <- tempfile(fileext = ".txt")
 analysis <- list(input = path, output = out, receptors = "R", cell_type = "T", config = cfg)
-writeLines(c("analysis <-", capture.output(dput(analysis))), config)
+writeLines(c(paste0("input = ", path), paste0("output = ", out),
+             "receptors = R", "cell_type = T", "targets = signal, null, zero", "qc_df = 1"), config)
 status <- system2(file.path(R.home("bin"), "Rscript"), c("scripts/run_nb.R", shQuote(config)))
 stopifnot(status == 0L, all(file.exists(file.path(out, c("gene_results.csv", "receptor_effects.csv", "analysis.rds", "sessionInfo.txt")))))
 unlink(c(path, config))
 unlink(out, recursive = TRUE)
 cat("All NB tests passed: signal, spline LRT, BH, rank failure, RDS readers, metadata alignment and CLI.\n")
+
+# Gene-set tests: singleton equivalence, membership validation and summed response.
+saveRDS(list(counts = counts, metadata = metadata), path)
+set_cfg <- list(gene_sets = list(single = "signal", pathway = c("signal", "null", "signal"),
+                                empty_expression = "zero"), qc_df = 1L)
+set_res <- run_receptor_nb(path, "R", "T", set_cfg)
+stopifnot(set_res$analysis_type == "gene_set_sum",
+          isTRUE(all.equal(subset(set_res$results, gene_set == "single")$p_value, sig$p_value)),
+          subset(set_res$results, gene_set == "pathway")$n_genes == 2L,
+          subset(set_res$results, gene_set == "pathway")$status == "tested",
+          subset(set_res$results, gene_set == "pathway")$p_value < 1e-6,
+          subset(set_res$results, gene_set == "empty_expression")$status == "filtered",
+          nrow(set_res$gene_set_members) == 4L)
+for (sets in list(list(bad = "missing"), list(bad = c("R", "signal")),
+                  list(bad = character()), list("signal"), list(bad = 1),
+                  setNames(list("signal", "null"), c("same", "same")))) {
+  err <- tryCatch(run_receptor_nb(path, "R", "T", list(gene_sets = sets)), error = conditionMessage)
+  stopifnot(is.character(err))
+}
+err <- tryCatch(run_receptor_nb(path, "R", "T", c(cfg, list(gene_sets = list(a = "signal")))),
+                error = conditionMessage)
+stopifnot(is.character(err), grepl("not both", err))
+# A collapsed count row gives the same depth and mitochondrial QC, including
+# a mitochondrial member; detected-gene QC is disabled because collapsing changes it.
+aggregate_members <- c("signal", "null", "MT-A")
+original <- run_receptor_nb(path, "R", "T", list(
+  gene_sets = list(aggregate = aggregate_members), adjust_detected = FALSE, qc_df = 1L))
+collapsed <- rbind(counts[!rownames(counts) %in% aggregate_members, ],
+                   aggregate = Matrix::colSums(counts[aggregate_members, ]))
+saveRDS(list(counts = collapsed, metadata = metadata), path)
+comparison <- run_receptor_nb(path, "R", "T", list(targets = "aggregate",
+  mito_genes = "aggregate", adjust_detected = FALSE, qc_df = 1L))
+stopifnot(original$results$status == "tested", comparison$results$status == "tested",
+          isTRUE(all.equal(original$results$p_value, comparison$results$p_value, tolerance = 1e-6)))
+saveRDS(list(counts = as.matrix(counts), metadata = metadata), path)
+dense_set <- run_receptor_nb(path, "R", "T", set_cfg)
+stopifnot(isTRUE(all.equal(set_res$results, dense_set$results)))
+analysis <- list(input = path, output = out, receptors = "R", cell_type = "T", config = set_cfg)
+gmt <- tempfile(fileext = ".gmt")
+writeLines(c("single\tna\tsignal", "pathway\tURL\tsignal\tnull\tsignal",
+             "empty_expression\t\tzero"), gmt)
+writeLines(c(paste0("input = ", basename(path)), paste0("output = ", out),
+             "receptors = R", "cell_type = T", paste0("gene_sets_gmt = ", basename(gmt)), "qc_df = 1"), config)
+parsed <- read_analysis_config(config)
+stopifnot(identical(read_gene_sets_gmt(parsed$config$gene_sets_gmt), set_res$config$gene_sets))
+status <- system2(file.path(R.home("bin"), "Rscript"), c("scripts/run_nb.R", shQuote(config)))
+stopifnot(status == 0L, all(file.exists(file.path(out,
+  c("gene_set_results.csv", "gene_set_members.csv", "receptor_effects.csv", "analysis.rds")))))
+unlink(c(path, config))
+unlink(out, recursive = TRUE)
+cat("All gene-set tests passed.\n")
+
+# Strict text parser and GMT validation, without evaluating configuration code.
+for (content in c("input = x\ninput = y", "analysis <- list()",
+                  "input=x\noutput=y\nreceptors=R\ncell_type=T\nqc_df=bad",
+                  "input=x\noutput=y\nreceptors=R\ncell_type=T\nadjust_detected=yes",
+                  "input=x\noutput=y\nreceptors=R\ncell_type=T\nunknown=x")) {
+  writeLines(content, config)
+  stopifnot(is.character(tryCatch(read_analysis_config(config), error = conditionMessage)))
+}
+for (content in c("", "name\tdesc", "name\tdesc\t", "name\tdesc\tgene\t",
+                  "name\tdesc\tg1\nname\tdesc\tg2")) {
+  writeLines(content, gmt)
+  stopifnot(is.character(tryCatch(read_gene_sets_gmt(gmt), error = conditionMessage)))
+}
+unlink(c(config, gmt))
+cat("All text config and GMT tests passed.\n")

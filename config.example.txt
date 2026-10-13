@@ -1,0 +1,23 @@
+# Plain text: key = value. Do not quote values or add inline comments.
+# Relative paths resolve from this configuration file's directory.
+input = data.rds
+output = results/il7r_cd4_nb
+receptors = IL7R
+cell_type = CD4 T
+cell_type_key = cell_type
+donor_key = donor_id
+assay = RNA
+layer = counts
+# Comma-separated metadata columns; empty means none.
+covariates =
+mito_prefix = MT-
+family = nbinom2
+receptor_df = 1
+qc_df = 3
+min_detected = 20
+min_fraction = 0.01
+min_donors = 5
+min_receptor_donors = 3
+adjust_detected = true
+# Uncomment to test gene sets instead of individual genes.
+# gene_sets_gmt = pathways.gmt

@@ -2,6 +2,18 @@
 
 This repository provides code to test for association between the expression of a signaling receptor and downstream targets using single cell profiles.  
 
+## Portable container
+
+The R workflow is packaged in a Docker image with its R dependencies, Seurat/SCE
+readers, and a built-in synthetic self-test. See [CONTAINER.md](CONTAINER.md) for
+build/run commands on macOS, Windows, Linux and HPC, and [container/config.txt](container/config.txt)
+for a configuration using mounted input/output paths.
+
+```bash
+docker build -t receptor-signaling:0.1.0 .
+docker run --rm receptor-signaling:0.1.0 --self-test
+```
+
 ## Input and quick start
 
 An RDS file is a container, not a particular data format. Supported contents:
@@ -25,10 +37,10 @@ install.packages(c("Matrix", "glmmTMB"), lib = ".Rlib",
 # SummarizedExperiment are needed for those object classes.
 ```
 
-Edit [config.example.R](config.example.R), then run from this directory:
+Edit [config.example.txt](config.example.txt), then run from this directory:
 
 ```bash
-Rscript scripts/run_nb.R config.example.R
+Rscript scripts/run_nb.R config.example.txt
 ```
 
 Specify input/output paths, receptor(s), cell type and donor metadata column.
@@ -44,6 +56,74 @@ saveRDS(object, "joined.rds")
 The reader requires an exact layer match; it does not silently select one sample.
 It reorders metadata by cell name and checks for missing/duplicate identifiers.
 On-disk matrix backends are not supported by this initial implementation.
+
+## Plain-text configuration
+
+Configurations are data, not executable R scripts. See [config.example.txt](config.example.txt).
+Use one `key = value` per line, without quotes. Blank lines and lines beginning
+with `#` are ignored; inline comments are not supported. Unknown or duplicate
+keys are errors. `input`, `output`, `receptors`, and `cell_type` are required.
+Other keys use the defaults described below. Lists (`receptors`, `covariates`,
+`targets`, `mito_genes`) use commas; booleans use `true` or `false` and numbers
+use ordinary numeric notation (no R `L` suffix). An empty `covariates` means none;
+empty `targets`, `mito_genes`, or `gene_sets_gmt` select their defaults.
+Relative input, output, and GMT paths resolve from the configuration file's
+location, independent of the shell's working directory. Paths and cell-type
+names can contain spaces. Existing R-script configs must be converted to this
+format; the CLI no longer sources them. The R function API still accepts lists.
+
+## Receptor–gene-set association
+
+To test a pathway or an unsigned GRN target set across cells of one cell type,
+set `gene_sets_gmt` in your plain-text configuration:
+
+```text
+gene_sets_gmt = pathways.gmt
+```
+
+The GMT file contains one set per line: set name, description (or `na`), then
+one or more gene identifiers, separated by **tabs**. For example (shown with spacing):
+
+```text
+pathway_A    na    GENE1    GENE2    GENE3
+regulon_B    na    GENE4    GENE5
+```
+
+Use actual tabs when creating this file. Descriptions are ignored. Blank lines
+are skipped; duplicate set names and empty gene fields are rejected. Omit
+`targets` when supplying `gene_sets_gmt`. All sets in the file are tested.
+
+Run the same `Rscript scripts/run_nb.R config.txt` command (or container command).
+Each set's response is the **sum of raw member counts per cell**. The existing
+within-donor receptor test, covariates, donor random intercept, spline option and
+fit checks apply to this response. Reference depth, mitochondrial counts and
+number of detected genes exclude **every member of that set and every input
+receptor**. No per-member detection filter is applied; detection thresholds refer
+to cells with a positive summed count. Overlapping sets are allowed and fitted
+separately. Duplicate members within a set are counted once. Missing identifiers,
+empty sets, duplicate set names and sets containing input receptors are rejected;
+remove receptors explicitly when defining the intended target set.
+
+This asks whether receptor expression is associated with the set's **total RNA
+count relative to reference depth**, conditional on the model adjustments. It is
+not a test that every member changes, an enrichment test against other genes, or
+a signed/weighted GRN activity test. Highly expressed members can dominate and
+opposing member changes can cancel. A linear rate ratio describes the summed
+response. Gene-level follow-up can help explain a set result, but requires its own
+prespecified multiple-testing family.
+
+The NB model is an assumption for the aggregate response: sums of correlated NB
+counts are not generally NB distributed. Inspect model adequacy before interpreting
+asymptotic p-values; these implementation tests do not establish calibration.
+The NB variance models are described in the
+[glmmTMB family documentation](https://glmmtmb.github.io/glmmTMB/reference/nbinom2.html).
+
+Set runs write `gene_set_results.csv` (including set size) instead of
+`gene_results.csv`, plus `gene_set_members.csv` with the exact analyzed membership.
+`receptor_effects.csv` uses a `gene_set` identifier and `analysis.rds` records the
+analysis type and membership. BH correction is across eligible **sets in that
+run**, including eligible failed fits in its denominator. Overlap makes tests
+dependent; the existing BH assumptions and cross-run multiplicity caveats apply.
 
 ## Statistical model
 
